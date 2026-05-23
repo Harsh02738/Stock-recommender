@@ -9,6 +9,9 @@ import requests
 from io import StringIO
 import os
 import pandas_ta
+from sklearn.cluster import KMeans
+from sklearn.preprocessing import StandardScaler
+
 
 wikiurl="https://en.wikipedia.org/wiki/NIFTY_50"
 CACHE_FILE= "nifty50data.parquet"
@@ -26,7 +29,6 @@ else:
     nifty50.columns = ['Company Name','Symbol','Sector','Date added']
     symbolslist = nifty50["Symbol"].tolist()
     symbolslist=[s+'.NS' for s in symbolslist]
-    symbolslist=symbolslist[:10] #for testing lets take only 10 stocks
     enddate=pd.Timestamp.today()
     startdate=enddate-pd.DateOffset(years=5)
     df=yf.download(tickers=symbolslist,start=startdate,end=enddate).stack(future_stack=True)
@@ -74,4 +76,36 @@ factordata=factordata.join(data['return_1m']).sort_index()
 obs=(factordata.groupby(level=1).size())
 valid=obs[obs>=10]
 factordata=factordata[factordata.index.get_level_values('ticker').isin(valid.index)]
-#print(factordata)
+
+betas=(factordata.groupby(level=1,group_keys=False).apply(lambda x:RollingOLS(endog=x['return_1m'],
+       exog=sm.add_constant(x.drop('return_1m',axis=1)),window=min(24,x.shape[0]),
+       min_nobs=len(x.columns)+1).fit(params_only=True).params.drop('const',axis=1)))
+
+data=data.join(betas.groupby('ticker').shift())
+factors=['SMB',  'HML' , 'WML' , 'MF']
+data.loc[:,factors]=data.groupby('ticker',group_keys=False)[factors].apply(lambda x:x.fillna(x.mean()))
+
+def get_clusters(df):
+    scaler=StandardScaler()
+    scaled=scaler.fit_transform(df)
+    df['cluster']=KMeans(n_clusters=4,random_state=0,init='random').fit(scaled).labels_
+    return df
+data=data.dropna().groupby('date',group_keys=False).apply(get_clusters)
+
+def plotclusters(data):
+    cluster0=data[data['cluster']==0]
+    cluster1=data[data['cluster']==1]
+    cluster2=data[data['cluster']==2]
+    cluster3=data[data['cluster']==3]
+    plt.scatter(cluster0.iloc[:,0],cluster0.iloc[:,6],color='red',label="cluster 0")
+    plt.scatter(cluster1.iloc[:,0],cluster1.iloc[:,6],color='blue',label="cluster 1")
+    plt.scatter(cluster2.iloc[:,0],cluster2.iloc[:,6],color='green',label="cluster 2")
+    plt.scatter(cluster3.iloc[:,0],cluster3.iloc[:,6],color='black',label="cluster 3")
+    plt.legend()
+    plt.show()
+    return
+plt.style.use('ggplot')
+for i in data.index.get_level_values('date').unique().to_list():
+    g=data.xs(i,level=0)
+    plt.title(f" date{i}")
+    plotclusters(g)
