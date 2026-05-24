@@ -11,10 +11,14 @@ import os
 import pandas_ta
 from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
-
+from pypfopt.efficient_frontier import EfficientFrontier
+from pypfopt import risk_models,expected_returns
+import warnings
+warnings.filterwarnings('ignore')
 
 wikiurl="https://en.wikipedia.org/wiki/NIFTY_500"
 CACHE_FILE= "nifty500data.parquet"
+PRICE_CACHE = "pricedatadaily.parquet"
 outlier_cutoff=0.005
 
 if os.path.exists(CACHE_FILE):
@@ -96,20 +100,27 @@ factors=['SMB',  'HML' , 'WML' , 'MF']
 data.loc[:,factors]=data.groupby('ticker',group_keys=False)[factors].apply(lambda x:x.fillna(x.mean()))
 
 def get_clusters(df):
-    scaler=StandardScaler()
-    scaled=scaler.fit_transform(df)
-    df['cluster']=KMeans(n_clusters=4,random_state=0,init='random').fit(scaled).labels_
+    scaler = StandardScaler()
+    scaled = scaler.fit_transform(df)
+    df['cluster'] = KMeans(n_clusters=4, random_state=0, init='random').fit(scaled).labels_
     return df
-data=data.dropna().groupby('date',group_keys=False).apply(get_clusters)
+data = data.dropna().groupby('date', group_keys=False).apply(get_clusters)
+highest_rsi_cluster = data.groupby(level=0).apply(
+    lambda x: x.groupby('cluster')['rsi'].mean().idxmax()
+).rename('best_cluster')
+data = data.join(highest_rsi_cluster, on='date')
+data['is_best'] = data['cluster'] == data['best_cluster']
+
+'''
 def plotclusters(data):
     cluster0=data[data['cluster']==0]
     cluster1=data[data['cluster']==1]
     cluster2=data[data['cluster']==2]
     cluster3=data[data['cluster']==3]
-    plt.scatter(cluster0['rsi'],cluster0['return_1m'],color='red',label="cluster 0")
-    plt.scatter(cluster1['rsi'],cluster1['return_1m'],color='blue',label="cluster 1")
-    plt.scatter(cluster2['rsi'],cluster2['return_1m'],color='green',label="cluster 2")
-    plt.scatter(cluster3['rsi'],cluster3['return_1m'],color='black',label="cluster 3")
+    plt.scatter(cluster0.iloc[:,0],cluster0.iloc[:,1],color='red',label="cluster 0")
+    plt.scatter(cluster1.iloc[:,0],cluster1.iloc[:,1],color='green',label="cluster 1")
+    plt.scatter(cluster2.iloc[:,0],cluster2.iloc[:,1],color='blue',label="cluster 2")
+    plt.scatter(cluster3.iloc[:,0],cluster3.iloc[:,1],color='black',label="cluster 3")
     plt.legend()
     plt.show()
     return
@@ -118,3 +129,75 @@ for i in data.index.get_level_values('date').unique().to_list():
     g=data.xs(i,level=0)
     plt.title(f" date{i}")
     plotclusters(g)
+'''
+filterdf=data[data['is_best']].copy()
+
+filterdf=filterdf.reset_index(level=1)
+filterdf.index=filterdf.index+pd.DateOffset(1)
+filterdf=filterdf.reset_index().set_index(['date','ticker'])
+dates=filterdf.index.get_level_values('date').unique().tolist()
+fixeddates={}
+for date in dates:
+    fixeddates[date]=filterdf.xs(date,level=0).index.to_list()
+
+def optimizeweights(prices,lowerbound=0):
+    returns=expected_returns.mean_historical_return(prices=prices,frequency=252)
+    cov=risk_models.sample_cov(prices=prices,frequency=252)
+    ef=EfficientFrontier(expected_returns=returns,cov_matrix=cov,weight_bounds=(lowerbound,.1),solver='SCS')
+    ef.max_sharpe()
+    return ef.clean_weights()
+
+
+if os.path.exists(PRICE_CACHE):
+    newdf = pd.read_parquet(PRICE_CACHE)
+else:
+    stocks = data.index.get_level_values('ticker').unique().to_list()
+    newdf = yf.download(tickers=stocks, start=data.index.get_level_values('date').unique()[0]-pd.DateOffset(months=12))
+    newdf.to_parquet(PRICE_CACHE)
+
+returnsdf=np.log(newdf['Close']).diff()
+portfoliodf=pd.DataFrame()
+
+for startdate in fixeddates.keys():
+    enddate=pd.to_datetime(startdate)+pd.offsets.MonthEnd(0)
+    cols=fixeddates[startdate]
+    optmizationstartdate=pd.to_datetime(startdate)-pd.DateOffset(months=12)
+    optmizationenddate=pd.to_datetime(startdate)-pd.DateOffset(days=1)
+    optdf=newdf[optmizationstartdate:optmizationenddate]['Close'][cols]
+    weights=optimizeweights(prices=optdf,lowerbound=round(1/(len(optdf.columns)*2),3))
+    weights=pd.DataFrame(weights,index=pd.Series(0))
+    
+    tempdf=returnsdf[startdate:enddate]
+    tempdf=tempdf.stack().to_frame('return').reset_index(level=0)
+    tempdf.index.name='ticker'
+    tempdf=tempdf.rename(columns={'Date':'date'})
+    w=weights.stack().to_frame('weight')
+    w.index=w.index.droplevel(0)
+    w.index.name='ticker'
+    tempdf=tempdf.join(w)
+    tempdf=tempdf.reset_index().set_index(['date','ticker'])
+    tempdf['weighted_return']=tempdf['return']*tempdf['weight']
+    
+    portfoliodf=pd.concat([portfoliodf,tempdf],axis=0)
+
+portfoliodf = portfoliodf.dropna()
+portfolioreturns = portfoliodf.groupby(level=0)['weighted_return'].sum().to_frame('strategy_return')
+
+nifty500index = yf.download('^CRSLDX', start=portfolioreturns.index.min(), end=portfolioreturns.index.max())
+nifty500returns = np.log(nifty500index['Close']).diff().dropna()
+nifty500returns.columns = ['nifty500_return']
+
+latest = portfoliodf.dropna().index.get_level_values('date').max()
+print(portfoliodf.loc[latest].dropna()[['weight']])
+
+plt.figure(figsize=(14,6))
+plt.xticks(rotation=45)
+ax=plt.gca()
+ax.xaxis.set_major_locator(plt.matplotlib.dates.MonthLocator())
+ax.xaxis.set_major_formatter(plt.matplotlib.dates.DateFormatter('%m-%Y'))
+plt.plot((portfolioreturns['strategy_return'].add(1).cumprod() - 1)*100, label='strategy')
+plt.plot((nifty500returns['nifty500_return'].add(1).cumprod() - 1)*100, label='NIFTY 500')
+plt.legend()
+plt.title('strategy vs NIFTY 500')
+plt.ylabel('Cumulative Return %')
+plt.show()

@@ -222,3 +222,6 @@ __marimo__/
 
 #csv
 *.csv
+
+#image
+*.packaging
