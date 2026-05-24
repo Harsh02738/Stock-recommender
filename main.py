@@ -13,8 +13,8 @@ from sklearn.cluster import KMeans
 from sklearn.preprocessing import StandardScaler
 
 
-wikiurl="https://en.wikipedia.org/wiki/NIFTY_50"
-CACHE_FILE= "nifty50data.parquet"
+wikiurl="https://en.wikipedia.org/wiki/NIFTY_500"
+CACHE_FILE= "nifty500data.parquet"
 outlier_cutoff=0.005
 
 if os.path.exists(CACHE_FILE):
@@ -25,10 +25,12 @@ else:
     }
     response=requests.get(wikiurl,headers=headers)
     tables=pd.read_html(StringIO(response.text))
-    nifty50=tables[1]
-    nifty50.columns = ['Company Name','Symbol','Sector','Date added']
-    symbolslist = nifty50["Symbol"].tolist()
+    nifty500=tables[4]
+    print(nifty500.columns.tolist())
+    nifty500.columns = ['Slno','Company Name','Industry','Symbol' ,'Series' ,'ISIN Code']
+    symbolslist = nifty500["Symbol"].tolist()
     symbolslist=[s+'.NS' for s in symbolslist]
+    symbolslist=symbolslist[1:]
     enddate=pd.Timestamp.today()
     startdate=enddate-pd.DateOffset(years=5)
     df=yf.download(tickers=symbolslist,start=startdate,end=enddate).stack(future_stack=True)
@@ -42,7 +44,15 @@ df['bb_low']=df.groupby(level=1)['close'].transform(lambda  x: pandas_ta.bbands(
 df['bb_mid']=df.groupby(level=1)['close'].transform(lambda  x: pandas_ta.bbands(close=np.log1p(x),length=20).iloc[:,1])
 df['bb_high']=df.groupby(level=1)['close'].transform(lambda  x: pandas_ta.bbands(close=np.log1p(x),length=20).iloc[:,2])
 def compute_atr(data):
-    atr=pandas_ta.atr(high=data['high'],low=data['low'],close=data['close'],length=14)
+    high = data['high'].astype(float)
+    low = data['low'].astype(float)
+    close = data['close'].astype(float)
+    tr = pd.concat([
+        high - low,
+        (high - close.shift()).abs(),
+        (low - close.shift()).abs()
+    ], axis=1).max(axis=1)
+    atr = tr.ewm(span=14, adjust=False).mean()
     return atr.sub(atr.mean()).div(atr.std())
 df['atr']=df.groupby(level=1,group_keys=False).apply(compute_atr)
 def compute_macd(close):
@@ -51,7 +61,7 @@ def compute_macd(close):
 df['macd']=df.groupby(level=1,group_keys=False)['close'].apply(compute_macd)
 df['rs_vol']=(df['volume']*df['close'])/1e6
 
-lastcols=[c for c in df.columns.unique(0) if c not in ['rs_vol', 'open','volume','high','low']]
+lastcols=[c for c in df.columns.unique(0) if c not in ['rs_vol', 'open','volume','high','low','adj close']]
 features=df.unstack()[lastcols].resample('ME').last().stack('ticker')
 vol=df.unstack('ticker')['rs_vol'].resample('ME').mean().stack('ticker').to_frame('rs_vol')
 data=pd.concat([features,vol],axis=1).dropna()
@@ -91,16 +101,15 @@ def get_clusters(df):
     df['cluster']=KMeans(n_clusters=4,random_state=0,init='random').fit(scaled).labels_
     return df
 data=data.dropna().groupby('date',group_keys=False).apply(get_clusters)
-
 def plotclusters(data):
     cluster0=data[data['cluster']==0]
     cluster1=data[data['cluster']==1]
     cluster2=data[data['cluster']==2]
     cluster3=data[data['cluster']==3]
-    plt.scatter(cluster0.iloc[:,0],cluster0.iloc[:,6],color='red',label="cluster 0")
-    plt.scatter(cluster1.iloc[:,0],cluster1.iloc[:,6],color='blue',label="cluster 1")
-    plt.scatter(cluster2.iloc[:,0],cluster2.iloc[:,6],color='green',label="cluster 2")
-    plt.scatter(cluster3.iloc[:,0],cluster3.iloc[:,6],color='black',label="cluster 3")
+    plt.scatter(cluster0['rsi'],cluster0['return_1m'],color='red',label="cluster 0")
+    plt.scatter(cluster1['rsi'],cluster1['return_1m'],color='blue',label="cluster 1")
+    plt.scatter(cluster2['rsi'],cluster2['return_1m'],color='green',label="cluster 2")
+    plt.scatter(cluster3['rsi'],cluster3['return_1m'],color='black',label="cluster 3")
     plt.legend()
     plt.show()
     return

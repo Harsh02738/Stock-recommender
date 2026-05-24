@@ -219,3 +219,6 @@ __marimo__/
 
 #db
 *.parquet
+
+#csv
+*.csv
