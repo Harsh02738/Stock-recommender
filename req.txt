@@ -5,6 +5,5 @@ statsmodels
 yfinance
 scikit-learn
 PyPortfolioOpt
-p
 pyarrow
 pandas_ta

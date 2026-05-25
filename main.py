@@ -96,7 +96,7 @@ betas=(factordata.groupby(level=1,group_keys=False).apply(lambda x:RollingOLS(en
        min_nobs=len(x.columns)+1).fit(params_only=True).params.drop('const',axis=1)))
 
 data=data.join(betas.groupby('ticker').shift())
-factors=['SMB',  'HML' , 'WML' , 'MF']
+factors=['SMB','HML','WML','MF']
 data.loc[:,factors]=data.groupby('ticker',group_keys=False)[factors].apply(lambda x:x.fillna(x.mean()))
 
 def get_clusters(df):
@@ -140,10 +140,10 @@ fixeddates={}
 for date in dates:
     fixeddates[date]=filterdf.xs(date,level=0).index.to_list()
 
-def optimizeweights(prices,lowerbound=0):
+def optimizeweights(prices):
     returns=expected_returns.mean_historical_return(prices=prices,frequency=252)
     cov=risk_models.sample_cov(prices=prices,frequency=252)
-    ef=EfficientFrontier(expected_returns=returns,cov_matrix=cov,weight_bounds=(lowerbound,.1),solver='SCS')
+    ef=EfficientFrontier(expected_returns=returns,cov_matrix=cov,weight_bounds=(0,.1),solver='SCS')
     ef.max_sharpe()
     return ef.clean_weights()
 
@@ -164,7 +164,12 @@ for startdate in fixeddates.keys():
     optmizationstartdate=pd.to_datetime(startdate)-pd.DateOffset(months=12)
     optmizationenddate=pd.to_datetime(startdate)-pd.DateOffset(days=1)
     optdf=newdf[optmizationstartdate:optmizationenddate]['Close'][cols]
-    weights=optimizeweights(prices=optdf,lowerbound=round(1/(len(optdf.columns)*2),3))
+    threshold = int(0.8 * len(optdf))
+    optdf = optdf.dropna(axis=1, thresh=threshold)
+    optdf = optdf.ffill().bfill()
+    if optdf.shape[1] < 2:
+        continue
+    weights=optimizeweights(prices=optdf)
     weights=pd.DataFrame(weights,index=pd.Series(0))
     
     tempdf=returnsdf[startdate:enddate]
