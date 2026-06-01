@@ -41,8 +41,8 @@ def _get_regime():
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def _get_live_signals():
-    return get_live_signals()
+def _get_live_signals(force_refresh=False):
+    return get_live_signals(force_refresh=force_refresh)
 
 
 @st.cache_data(ttl=86400, show_spinner=False)
@@ -64,6 +64,7 @@ with col_refresh:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 Refresh"):
         st.cache_data.clear()
+        st.session_state['force_refresh'] = True
         st.rerun()
 
 if regime == 'bear':
@@ -73,7 +74,8 @@ st.divider()
 
 # ── Load live signals (used across tabs) ────────────────────────────────────────
 with st.spinner("Computing live signals from latest prices..."):
-    signals = _get_live_signals()
+    _force = st.session_state.pop('force_refresh', False)
+    signals = _get_live_signals(force_refresh=_force)
 
 ffdata = _load_ffdata()
 

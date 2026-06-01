@@ -62,10 +62,12 @@ def fetch_nse_index(index_name):
 
 
 # ── Data loading ───────────────────────────────────────────────────────────────
-def load_price_data(force_refresh=False):
+def load_price_data(force_refresh=False, max_age_hours=20):
     """Download or load cached NIFTY 500 + Microcap 250 daily OHLCV data."""
     if not force_refresh and os.path.exists(CACHE_FILE):
-        return pd.read_parquet(CACHE_FILE)
+        age_hours = (time.time() - os.path.getmtime(CACHE_FILE)) / 3600
+        if age_hours <= max_age_hours:
+            return pd.read_parquet(CACHE_FILE)
 
     nifty500_syms = fetch_nifty500_wikipedia()
     microcap_syms = fetch_nse_index("NIFTY MICROCAP 250")
