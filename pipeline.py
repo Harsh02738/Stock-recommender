@@ -370,7 +370,10 @@ def run_backtest(data, prices_raw, ffdata):
             opt_start = pd.to_datetime(startdate) - pd.DateOffset(months=12)
             opt_end   = pd.to_datetime(startdate) - pd.DateOffset(days=1)
 
-            optdf = prices_raw[opt_start:opt_end]['Close'][cols]
+            available = [c for c in cols if c in prices_raw['Close'].columns]
+            if len(available) < 2:
+                continue
+            optdf = prices_raw[opt_start:opt_end]['Close'][available]
             threshold = int(0.8 * len(optdf))
             optdf = optdf.dropna(axis=1, thresh=threshold).ffill().bfill()
             if optdf.shape[1] < 2:
